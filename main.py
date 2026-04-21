@@ -436,6 +436,14 @@ user_game_data = {}
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+async def is_subscribed_to_channel(user_id: int) -> bool:
+    if not CHANNEL_USERNAME:
+        return True
+    try:
+        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
+        return member.status in ["member", "creator", "administrator"]
+    except:
+        return False
 
 async def is_subscribed_to_channel(user_id: int) -> bool:
     if not CHANNEL_USERNAME:
@@ -455,11 +463,11 @@ async def start_cmd(message: types.Message):
     if not await is_subscribed_to_channel(message.from_user.id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Подписаться", url=f"https://t.me/{CHANNEL_USERNAME}")],
-            [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
+            [InlineKeyboardButton(text="✅ Проверить", callback_data="check_sub")]
         ])
-        await message.answer(f"🎲 *Добро пожаловать!*\nПодпишитесь на канал @{CHANNEL_USERNAME}", parse_mode="Markdown", reply_markup=kb)
+        await message.answer(f"Подпишитесь на @{CHANNEL_USERNAME}", reply_markup=kb)
         return
-    await message.answer("🎲 Добро пожаловать!", reply_markup=main_menu(message.from_user.id))
+    await message.answer("🎲 Добро пожаловать!\nИспользуйте кнопки меню.", reply_markup=main_menu(message.from_user.id))
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: types.CallbackQuery):
@@ -1802,6 +1810,14 @@ async def reject_withdraw(callback: types.CallbackQuery):
     conn.close()
     await callback.message.edit_text(f"❌ Заявка #{req_id} отклонена")
     await callback.answer()
+
+@dp.callback_query(F.data == "check_sub")
+    async def check_sub(callback: types.CallbackQuery):
+        if await is_subscribed_to_channel(callback.from_user.id):
+            await callback.message.delete()
+            await start_cmd(callback.message)
+        else:
+            await callback.answer("❌ Вы не подписаны", show_alert=True)
 
 # ========== ЗАПУСК ==========
 async def main():
