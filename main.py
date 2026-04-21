@@ -1812,12 +1812,12 @@ async def reject_withdraw(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "check_sub")
-    async def check_sub(callback: types.CallbackQuery):
-        if await is_subscribed_to_channel(callback.from_user.id):
-            await callback.message.delete()
-            await start_cmd(callback.message)
-        else:
-            await callback.answer("❌ Вы не подписаны", show_alert=True)
+async def check_sub(callback: types.CallbackQuery):
+    if await is_subscribed_to_channel(callback.from_user.id):
+        await callback.message.delete()
+        await start_cmd(callback.message)
+    else:
+        await callback.answer("❌ Вы не подписаны", show_alert=True)
 
 # ========== ЗАПУСК ==========
 async def main():
