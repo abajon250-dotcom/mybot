@@ -3,6 +3,7 @@ import sqlite3
 import time
 import os
 import re
+import random
 from datetime import datetime
 import aiohttp
 
@@ -34,7 +35,7 @@ if not BOT_TOKEN or not API_ID or not API_HASH:
 
 # ========== КОНСТАНТЫ ==========
 DB_PATH = "bot.db"
-SESSIONS_DIR = "/tmp/sessions" if os.name != 'nt' else "sessions"  # для Windows локально - sessions, для Linux (Railway) - /tmp/sessions
+SESSIONS_DIR = "/tmp/sessions" if os.name != 'nt' else "sessions"
 TARIFFS = {
     "day": {"days": 1, "price": 5, "name": "1 день"},
     "week": {"days": 7, "price": 20, "name": "1 неделя"},
@@ -74,15 +75,12 @@ def init_db():
         wallet TEXT,
         status TEXT DEFAULT 'pending'
     )''')
-    # Миграции для старых баз
-    try:
-        c.execute("ALTER TABLE tg_accounts ADD COLUMN name TEXT DEFAULT ''")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE tg_accounts ADD COLUMN last_used INTEGER DEFAULT 0")
-    except:
-        pass
+    # Миграции
+    for col in ['name', 'last_used']:
+        try:
+            c.execute(f"ALTER TABLE tg_accounts ADD COLUMN {col} TEXT DEFAULT ''" if col == 'name' else f"ALTER TABLE tg_accounts ADD COLUMN {col} INTEGER DEFAULT 0")
+        except:
+            pass
     try:
         c.execute("ALTER TABLE vk_accounts ADD COLUMN is_active INTEGER DEFAULT 1")
     except:
@@ -285,7 +283,7 @@ async def check_crypto_invoice(invoice_id: str):
         return None
 
 # ========== ПРОВЕРКА ПОДПИСКИ НА КАНАЛ ==========
-async def check_channel_subscription(user_id: int) -> bool:
+async def is_subscribed_to_channel(user_id: int) -> bool:
     if not CHANNEL_USERNAME:
         return True
     try:
@@ -294,6 +292,7 @@ async def check_channel_subscription(user_id: int) -> bool:
     except:
         return False
 
+# ========== СПАМ-БОТ ==========
 async def check_spambot(client: TelegramClient):
     try:
         spambot = await client.get_entity('@Spambot')
@@ -302,13 +301,13 @@ async def check_spambot(client: TelegramClient):
         async for msg in client.iter_messages(spambot, limit=1):
             text = msg.text or ''
             if 'no restrictions' in text.lower():
-                return "✅ Нет ограничений (спам-блок отсутствует)"
+                return "✅ Нет ограничений"
             elif 'limited' in text.lower() or 'restricted' in text.lower():
-                return "⚠️ Есть ограничения (спам-блок активен)"
+                return "⚠️ Есть ограничения"
             else:
-                return "🤷 Не удалось определить статус"
+                return "🤷 Не удалось определить"
     except Exception as e:
-        return f"❌ Ошибка проверки: {e}"
+        return f"❌ Ошибка: {e}"
 
 # ========== КЛАВИАТУРЫ ==========
 def main_menu(tg_id):
@@ -323,9 +322,20 @@ def main_menu(tg_id):
 
 def game_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 куб (больше/меньше) x2", callback_data="game_1cube")],
-        [InlineKeyboardButton(text="2 куба (сумма 7) x2.4", callback_data="game_2cube")],
+        [InlineKeyboardButton(text="🎲 1 куб (больше/меньше) x2", callback_data="game_1cube")],
+        [InlineKeyboardButton(text="🎲🎲 2 куба (сумма 7) x2.4", callback_data="game_2cube")],
+        [InlineKeyboardButton(text="🎲 Мини-игры", callback_data="mini_games")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ])
+
+def mini_games_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💣 Мины", callback_data="game_mines")],
+        [InlineKeyboardButton(text="☂️ Зонтик (x2)", callback_data="game_umbrella")],
+        [InlineKeyboardButton(text="🎰 Кено (x10)", callback_data="game_keno")],
+        [InlineKeyboardButton(text="🐋 Кит (x50)", callback_data="game_whale")],
+        [InlineKeyboardButton(text="🎰 Автомат (x60)", callback_data="game_slots")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="game_menu")]
     ])
 
 def my_accounts_menu():
@@ -431,28 +441,31 @@ class TGAction(StatesGroup):
     waiting_message = State()
     waiting_join_link = State()
 
+class MinesGame(StatesGroup):
+    waiting_bet = State()
+    waiting_mines_count = State()
+    waiting_cell = State()
+
+class SlotsGame(StatesGroup):
+    waiting_bet = State()
+    waiting_combination = State()
+
+# Глобальные словари для данных игр
 user_game_data = {}
+mines_games = {}
 
 # ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-async def is_subscribed_to_channel(user_id: int) -> bool:
-    if not CHANNEL_USERNAME:
-        return True
-    try:
-        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
-        return member.status in ["member", "creator", "administrator"]
-    except:
-        return False
 
-async def is_subscribed_to_channel(user_id: int) -> bool:
-    if not CHANNEL_USERNAME:
-        return True
-    try:
-        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
-        return member.status in ["member", "creator", "administrator"]
-    except:
-        return False
+# ========== МИДЛВАРЬ ДЛЯ ПРОВЕРКИ ПОДПИСКИ ==========
+@dp.callback_query(lambda c: c.data not in ["check_sub"])
+async def subscription_middleware(callback: types.CallbackQuery):
+    if not await is_subscribed_to_channel(callback.from_user.id):
+        await callback.answer("❌ Подпишитесь на канал @hlspam!", show_alert=True)
+        return
+    # если подписан – пропускаем дальше
+    return
 
 # ========== ОСНОВНЫЕ ХЕНДЛЕРЫ ==========
 @dp.message(Command("start"))
@@ -475,7 +488,7 @@ async def check_sub(callback: types.CallbackQuery):
         await callback.message.delete()
         await start_cmd(callback.message)
     else:
-        await callback.answer("❌ Вы не подписаны на канал. Нажмите 'Подписаться' и затем 'Проверить подписку'.", show_alert=True)
+        await callback.answer("❌ Вы не подписаны", show_alert=True)
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback: types.CallbackQuery):
@@ -896,7 +909,7 @@ async def broadcast_vk_delay(message: types.Message, state: FSMContext):
     except:
         await message.answer("Введите число")
 
-# ========== ПОДПИСКА ==========
+# ========== ПОДПИСКА (ПЛАТНАЯ) ==========
 @dp.callback_query(F.data == "buy_sub")
 async def buy_sub(callback: types.CallbackQuery):
     if callback.message.chat.type != ChatType.PRIVATE:
@@ -1294,6 +1307,15 @@ async def game_menu_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("🎲 Выберите игру:", reply_markup=game_menu())
     await callback.answer()
 
+@dp.callback_query(F.data == "mini_games")
+async def mini_games_callback(callback: types.CallbackQuery):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.edit_text("🎲 Мини-игры:", reply_markup=mini_games_menu())
+    await callback.answer()
+
+# ---------- 1 куб ----------
 @dp.callback_query(F.data == "game_1cube")
 async def game_1cube_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.message.chat.type != ChatType.PRIVATE:
@@ -1356,6 +1378,7 @@ async def game_1cube_choice(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
+# ---------- 2 куба ----------
 @dp.callback_query(F.data == "game_2cube")
 async def game_2cube_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.message.chat.type != ChatType.PRIVATE:
@@ -1421,6 +1444,7 @@ async def game_2cube_choice(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
+# ---------- Ещё раз, повысить/понизить ставку, ва-банк ----------
 @dp.callback_query(F.data == "again")
 async def again_game(callback: types.CallbackQuery):
     if callback.message.chat.type != ChatType.PRIVATE:
@@ -1444,9 +1468,9 @@ async def again_game(callback: types.CallbackQuery):
         await asyncio.sleep(1)
         win = (choice == "1cube_less" and roll <= 3) or (choice == "1cube_more" and roll >= 4)
         if win:
-            payout = bet * 3
+            payout = bet * 2
             update_balance(user_id, payout)
-            result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x3 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
+            result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x2 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
         else:
             update_balance(user_id, -bet)
             result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n❌ ПРОИГРЫШ: -{bet}$\n💰 Баланс: {get_balance(user_id):.2f}$"
@@ -1459,9 +1483,9 @@ async def again_game(callback: types.CallbackQuery):
         await asyncio.sleep(0.5)
         win = (choice == "2cube_less7" and total < 7) or (choice == "2cube_eq7" and total == 7) or (choice == "2cube_more7" and total > 7)
         if win:
-            payout = bet * 3
+            payout = bet * 2.4
             update_balance(user_id, payout)
-            result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x3 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
+            result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x2.4 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
         else:
             update_balance(user_id, -bet)
             result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n❌ ПРОИГРЫШ: -{bet}$\n💰 Баланс: {get_balance(user_id):.2f}$"
@@ -1517,6 +1541,237 @@ async def all_in(callback: types.CallbackQuery):
     data["bet"] = balance
     user_game_data[user_id] = data
     await callback.answer(f"✅ Ва-банк! Ставка установлена на весь баланс: {balance:.2f}$", show_alert=True)
+
+# ========== МИНИ-ИГРЫ ==========
+# ---------- Зонтик ----------
+@dp.callback_query(F.data == "game_umbrella")
+async def umbrella_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.answer("💰 Введите ставку (мин 0.1$):")
+    await state.set_state(Deposit.waiting_amount)  # временно используем состояние
+    await state.update_data(game="umbrella")
+    await callback.answer()
+
+# ---------- Кено ----------
+@dp.callback_query(F.data == "game_keno")
+async def keno_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.answer("💰 Введите ставку (мин 0.1$):")
+    await state.set_state(Deposit.waiting_amount)
+    await state.update_data(game="keno")
+    await callback.answer()
+
+# ---------- Кит ----------
+@dp.callback_query(F.data == "game_whale")
+async def whale_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.answer("💰 Введите ставку (мин 0.1$):")
+    await state.set_state(Deposit.waiting_amount)
+    await state.update_data(game="whale")
+    await callback.answer()
+
+# ---------- Автомат ----------
+@dp.callback_query(F.data == "game_slots")
+async def slots_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.answer("💰 Введите ставку (мин 0.1$):")
+    await state.set_state(Deposit.waiting_amount)
+    await state.update_data(game="slots")
+    await callback.answer()
+
+# ---------- Мины ----------
+@dp.callback_query(F.data == "game_mines")
+async def mines_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Только в ЛС", show_alert=True)
+        return
+    await callback.message.answer("💰 Введите ставку (мин 0.1$):")
+    await state.set_state(MinesGame.waiting_bet)
+    await callback.answer()
+
+@dp.message(MinesGame.waiting_bet)
+async def mines_bet(message: types.Message, state: FSMContext):
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    try:
+        bet = float(message.text.strip())
+        if bet < 0.1:
+            await message.answer("❌ Мин 0.1$")
+            return
+        if bet > get_balance(message.from_user.id):
+            await message.answer(f"Не хватает. Баланс: {get_balance(message.from_user.id):.2f}$")
+            return
+        await state.update_data(bet=bet)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1 мина (x1.2)", callback_data="mines_1")],
+            [InlineKeyboardButton(text="2 мины (x1.5)", callback_data="mines_2")],
+            [InlineKeyboardButton(text="3 мины (x2)", callback_data="mines_3")],
+            [InlineKeyboardButton(text="5 мин (x3)", callback_data="mines_5")],
+            [InlineKeyboardButton(text="8 мин (x5)", callback_data="mines_8")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="mini_games")]
+        ])
+        await message.answer("💣 Выберите количество мин:", reply_markup=keyboard)
+        await state.set_state(MinesGame.waiting_mines_count)
+    except:
+        await message.answer("Введите число")
+
+@dp.callback_query(F.data.startswith("mines_"))
+async def mines_set_count(callback: types.CallbackQuery, state: FSMContext):
+    count = int(callback.data.split("_")[1])
+    data = await state.get_data()
+    bet = data["bet"]
+    multiplier = {1:1.2, 2:1.5, 3:2.0, 5:3.0, 8:5.0}[count]
+    total_cells = 9
+    mine_positions = set(random.sample(range(9), count))
+    safe_cells = [i for i in range(9) if i not in mine_positions]
+    mines_games[callback.from_user.id] = {
+        "bet": bet,
+        "multiplier": multiplier,
+        "mines": mine_positions,
+        "safe_cells": set(safe_cells),
+        "opened": set(),
+        "count": count
+    }
+    await show_mines_field(callback.message, callback.from_user.id)
+    await state.clear()
+    await callback.answer()
+
+async def show_mines_field(message: types.Message, user_id):
+    game = mines_games.get(user_id)
+    if not game:
+        return
+    keyboard = []
+    for i in range(9):
+        if i in game["opened"]:
+            symbol = "💣" if i in game["mines"] else "✅"
+        else:
+            symbol = "⬜"
+        row = i // 3
+        if len(keyboard) <= row:
+            keyboard.append([])
+        keyboard[row].append(InlineKeyboardButton(text=symbol, callback_data=f"mines_cell_{i}"))
+    keyboard.append([InlineKeyboardButton(text="🏆 Забрать выигрыш", callback_data="mines_cashout")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="mini_games")])
+    await message.edit_text(f"💣 Мины ({game['count']} мин, множитель x{game['multiplier']})", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data.startswith("mines_cell_"))
+async def mines_open_cell(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in mines_games:
+        await callback.answer("Игра не найдена", show_alert=True)
+        return
+    game = mines_games[user_id]
+    cell = int(callback.data.split("_")[2])
+    if cell in game["opened"]:
+        await callback.answer("Клетка уже открыта", show_alert=True)
+        return
+    if cell in game["mines"]:
+        update_balance(user_id, -game["bet"])
+        await callback.message.edit_text(f"💣 БАХ! Вы наступили на мину.\n❌ Проигрыш: {game['bet']:.2f}$", reply_markup=back_button("mini_games"))
+        del mines_games[user_id]
+        await callback.answer()
+        return
+    game["opened"].add(cell)
+    safe_opened = len([c for c in game["opened"] if c not in game["mines"]])
+    total_safe = len(game["safe_cells"])
+    if safe_opened == total_safe:
+        payout = game["bet"] * game["multiplier"]
+        update_balance(user_id, payout)
+        await callback.message.edit_text(f"🎉 ПОБЕДА! Вы открыли все безопасные клетки!\n✅ Выигрыш: {game['bet']:.2f} x{game['multiplier']} = {payout:.2f}$", reply_markup=back_button("mini_games"))
+        del mines_games[user_id]
+        await callback.answer()
+        return
+    await show_mines_field(callback.message, user_id)
+    await callback.answer()
+
+@dp.callback_query(F.data == "mines_cashout")
+async def mines_cashout(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in mines_games:
+        await callback.answer("Игра не найдена", show_alert=True)
+        return
+    game = mines_games[user_id]
+    safe_opened = len([c for c in game["opened"] if c not in game["mines"]])
+    if safe_opened == 0:
+        await callback.answer("Нет открытых клеток", show_alert=True)
+        return
+    total_safe = len(game["safe_cells"])
+    coeff = (safe_opened / total_safe) * game["multiplier"]
+    payout = game["bet"] * coeff
+    update_balance(user_id, payout)
+    await callback.message.edit_text(f"💰 Вы забрали выигрыш досрочно.\n✅ Выигрыш: {payout:.2f}$", reply_markup=back_button("mini_games"))
+    del mines_games[user_id]
+    await callback.answer()
+
+# Обработчик ввода ставки для зонтика, кено, кита, автомата
+@dp.message(Deposit.waiting_amount)
+async def mini_game_bet(message: types.Message, state: FSMContext):
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    data = await state.get_data()
+    game = data.get("game")
+    if not game:
+        return
+    try:
+        bet = float(message.text.strip())
+        if bet < 0.1:
+            await message.answer("❌ Мин 0.1$")
+            return
+        if bet > get_balance(message.from_user.id):
+            await message.answer(f"Не хватает. Баланс: {get_balance(message.from_user.id):.2f}$")
+            return
+        if game == "umbrella":
+            win = random.random() < 0.5
+            if win:
+                payout = bet * 2
+                update_balance(message.from_user.id, payout)
+                result = f"☂️ Дождь прошёл мимо!\n✅ Выигрыш: {bet:.2f} x2 = {payout:.2f}$"
+            else:
+                update_balance(message.from_user.id, -bet)
+                result = f"☂️ Вы промокли!\n❌ Проигрыш: {bet:.2f}$"
+        elif game == "keno":
+            chosen = random.randint(1,20)
+            drawn = random.randint(1,20)
+            if chosen == drawn:
+                payout = bet * 10
+                update_balance(message.from_user.id, payout)
+                result = f"🎰 Кено! Ваше число {chosen}, выпало {drawn}\n✅ ДЖЕКПОТ: {bet:.2f} x10 = {payout:.2f}$"
+            else:
+                update_balance(message.from_user.id, -bet)
+                result = f"🎰 Кено! Ваше число {chosen}, выпало {drawn}\n❌ Проигрыш: {bet:.2f}$"
+        elif game == "whale":
+            roll = random.randint(1,100)
+            if roll == 100:
+                payout = bet * 50
+                update_balance(message.from_user.id, payout)
+                result = f"🐋 КИТ! Выпало 100!\n✅ ДЖЕКПОТ: {bet:.2f} x50 = {payout:.2f}$"
+            else:
+                update_balance(message.from_user.id, -bet)
+                result = f"🐋 Выпало {roll}\n❌ Проигрыш: {bet:.2f}$"
+        elif game == "slots":
+            symbols = ["🍒", "🍋", "🍊", "7️⃣"]
+            result_slots = [random.choice(symbols) for _ in range(3)]
+            if result_slots[0] == result_slots[1] == result_slots[2]:
+                payout = bet * 60
+                update_balance(message.from_user.id, payout)
+                result = f"🎰 {result_slots[0]} {result_slots[1]} {result_slots[2]}\n✅ ДЖЕКПОТ: {bet:.2f} x60 = {payout:.2f}$"
+            else:
+                update_balance(message.from_user.id, -bet)
+                result = f"🎰 {result_slots[0]} {result_slots[1]} {result_slots[2]}\n❌ Проигрыш: {bet:.2f}$"
+        else:
+            result = "❌ Неизвестная игра"
+        await message.answer(result, reply_markup=back_button("mini_games"))
+        await state.clear()
+    except:
+        await message.answer("Введите число")
 
 # ========== АДМИН-КОМАНДЫ ==========
 @dp.message(Command("addbalance"))
@@ -1810,14 +2065,6 @@ async def reject_withdraw(callback: types.CallbackQuery):
     conn.close()
     await callback.message.edit_text(f"❌ Заявка #{req_id} отклонена")
     await callback.answer()
-
-@dp.callback_query(F.data == "check_sub")
-async def check_sub(callback: types.CallbackQuery):
-    if await is_subscribed_to_channel(callback.from_user.id):
-        await callback.message.delete()
-        await start_cmd(callback.message)
-    else:
-        await callback.answer("❌ Вы не подписаны", show_alert=True)
 
 # ========== ЗАПУСК ==========
 async def main():
