@@ -256,7 +256,7 @@ async def create_crypto_invoice(amount_usd: float, description: str):
         "amount": str(amount_usd),
         "description": description,
         "paid_btn_name": "callback",
-        "paid_btn_url": f"https://t.me/{BOT_TOKEN.split(':')[0]}"
+        "paid_btn_url": f"https://t.me/LzCcOuWBot"
     }
     try:
         async with aiohttp.ClientSession() as session:
