@@ -323,8 +323,8 @@ def main_menu(tg_id):
 
 def game_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 куб (больше/меньше) x3", callback_data="game_1cube")],
-        [InlineKeyboardButton(text="2 куба (сумма 7) x3", callback_data="game_2cube")],
+        [InlineKeyboardButton(text="1 куб (больше/меньше) x2", callback_data="game_1cube")],
+        [InlineKeyboardButton(text="2 куба (сумма 7) x2.4", callback_data="game_2cube")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
     ])
 
@@ -1332,9 +1332,9 @@ async def game_1cube_choice(callback: types.CallbackQuery, state: FSMContext):
     await asyncio.sleep(1)
     win = (choice == "1cube_less" and roll <= 3) or (choice == "1cube_more" and roll >= 4)
     if win:
-        payout = bet * 3
+        payout = bet * 2
         update_balance(user_id, payout)
-        result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x3 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
+        result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x2 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
     else:
         update_balance(user_id, -bet)
         result_text = f"🎲 Выпало {roll}\n💰 Ставка: {bet}$\n❌ ПРОИГРЫШ: -{bet}$\n💰 Баланс: {get_balance(user_id):.2f}$"
@@ -1365,9 +1365,9 @@ async def game_2cube_bet(message: types.Message, state: FSMContext):
             return
         await state.update_data(bet=bet)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Сумма <7", callback_data="2cube_less7")],
-            [InlineKeyboardButton(text="Сумма =7", callback_data="2cube_eq7")],
-            [InlineKeyboardButton(text="Сумма >7", callback_data="2cube_more7")],
+            [InlineKeyboardButton(text="Сумма 7-", callback_data="2cube_less7")],
+            [InlineKeyboardButton(text="Сумма 7", callback_data="2cube_eq7")],
+            [InlineKeyboardButton(text="Сумма 7+", callback_data="2cube_more7")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="game_menu")]
         ])
         await message.answer("Выберите вариант:", reply_markup=keyboard)
@@ -1397,9 +1397,9 @@ async def game_2cube_choice(callback: types.CallbackQuery, state: FSMContext):
     await asyncio.sleep(0.5)
     win = (choice == "2cube_less7" and total < 7) or (choice == "2cube_eq7" and total == 7) or (choice == "2cube_more7" and total > 7)
     if win:
-        payout = bet * 3
+        payout = bet * 2.4
         update_balance(user_id, payout)
-        result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x3 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
+        result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n✅ ВЫИГРЫШ: {bet}$ x2.4 = {payout}$\n💰 Баланс: {get_balance(user_id):.2f}$"
     else:
         update_balance(user_id, -bet)
         result_text = f"🎲 {msg1.dice.value}+{msg2.dice.value}={total}\n💰 Ставка: {bet}$\n❌ ПРОИГРЫШ: -{bet}$\n💰 Баланс: {get_balance(user_id):.2f}$"
