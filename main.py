@@ -7,7 +7,7 @@ from datetime import datetime
 import aiohttp
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,28 +17,31 @@ from aiogram.enums import ChatType
 from telethon import TelegramClient
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import FloodWaitError
-from telethon.errors import SessionPasswordNeededError, ChatAdminRequiredError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 import vk_api
 
-# ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = "8354010714:AAG4BfVBaeSGxCaCINEc1ByWE07_ctWJg3o"
-API_ID = 37518219
-API_HASH = "c1b096d4133588d0b1a59b634e696861"
-ADMIN_ID = 6484109563
-CRYPTOBOT_TOKEN = "570860:AA7AZyjbAjcDj1yMG19afkT4bOgwYAAQUSI"
-CHANNEL_USERNAME = "hlspam"
+# ========== ЧТЕНИЕ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN", "")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "")
 
-# ========== ТАРИФЫ ПОДПИСКИ ==========
+# Проверка обязательных переменных
+if not BOT_TOKEN or not API_ID or not API_HASH:
+    raise ValueError("BOT_TOKEN, API_ID, API_HASH must be set in environment variables")
+
+# ========== КОНСТАНТЫ ==========
+DB_PATH = "bot.db"
+SESSIONS_DIR = "/tmp/sessions" if os.name != 'nt' else "sessions"  # для Windows локально - sessions, для Linux (Railway) - /tmp/sessions
 TARIFFS = {
     "day": {"days": 1, "price": 5, "name": "1 день"},
     "week": {"days": 7, "price": 20, "name": "1 неделя"},
     "month": {"days": 30, "price": 40, "name": "1 месяц"}
 }
 
-# ========== БАЗА ДАННЫХ ==========
-DB_PATH = "bot.db"
-
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -53,13 +56,16 @@ def init_db():
         owner_tg_id INTEGER,
         phone TEXT,
         session_file TEXT,
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        name TEXT DEFAULT '',
+        last_used INTEGER DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS vk_accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_tg_id INTEGER,
         token TEXT,
-        vk_name TEXT
+        vk_name TEXT,
+        is_active INTEGER DEFAULT 1
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS withdraw_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +74,7 @@ def init_db():
         wallet TEXT,
         status TEXT DEFAULT 'pending'
     )''')
-    # Миграция
+    # Миграции для старых баз
     try:
         c.execute("ALTER TABLE tg_accounts ADD COLUMN name TEXT DEFAULT ''")
     except:
@@ -84,15 +90,14 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ==========
 def get_user(tg_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT tg_id, username, sub_until, balance FROM users WHERE tg_id=?", (tg_id,))
     row = c.fetchone()
     conn.close()
-    if row:
-        return {"tg_id": row[0], "username": row[1], "sub_until": row[2] or 0, "balance": row[3]}
-    return None
+    return {"tg_id": row[0], "username": row[1], "sub_until": row[2] or 0, "balance": row[3]} if row else None
 
 def create_user(tg_id, username):
     conn = sqlite3.connect(DB_PATH)
@@ -103,8 +108,7 @@ def create_user(tg_id, username):
 
 def is_subscribed(tg_id):
     user = get_user(tg_id)
-    if not user: return False
-    return user["sub_until"] > int(time.time())
+    return user and user["sub_until"] > int(time.time())
 
 def set_subscription(tg_id, days):
     new_time = int(time.time()) + days * 86400
@@ -243,7 +247,7 @@ def update_withdraw_status(req_id, status):
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 
 async def create_crypto_invoice(amount_usd: float, description: str):
-    if not CRYPTOBOT_TOKEN or CRYPTOBOT_TOKEN == "YOUR_CRYPTOBOT_TOKEN":
+    if not CRYPTOBOT_TOKEN:
         return None
     url = f"{CRYPTOBOT_API_URL}/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
@@ -265,7 +269,7 @@ async def create_crypto_invoice(amount_usd: float, description: str):
         return None
 
 async def check_crypto_invoice(invoice_id: str):
-    if not CRYPTOBOT_TOKEN or CRYPTOBOT_TOKEN == "YOUR_CRYPTOBOT_TOKEN":
+    if not CRYPTOBOT_TOKEN:
         return None
     url = f"{CRYPTOBOT_API_URL}/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
@@ -294,7 +298,7 @@ async def check_spambot(client: TelegramClient):
     try:
         spambot = await client.get_entity('@Spambot')
         await client.send_message(spambot, '/start')
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         async for msg in client.iter_messages(spambot, limit=1):
             text = msg.text or ''
             if 'no restrictions' in text.lower():
@@ -591,8 +595,7 @@ async def tg_join_execute(message: types.Message, state: FSMContext):
         if "joinchat" in link:
             hash_match = re.search(r'joinchat/([A-Za-z0-9_-]+)', link)
             if hash_match:
-                hash_str = hash_match.group(1)
-                await client(ImportChatInviteRequest(hash_str))
+                await client(ImportChatInviteRequest(hash_match.group(1)))
                 await message.answer(f"✅ Вступил(а) по ссылке-приглашению")
             else:
                 raise Exception("Не удалось распознать ссылку-приглашение")
@@ -708,7 +711,7 @@ async def broadcast_tg_text(message: types.Message, state: FSMContext):
     if message.chat.type != ChatType.PRIVATE:
         return
     await state.update_data(text=message.text)
-    await message.answer("⏱ Введите задержку между сообщениями (сек, (рекомендуется 5) ):")
+    await message.answer("⏱ Введите задержку между сообщениями (сек, рекомендуется 5):")
     await state.set_state(BroadcastTG.waiting_delay)
 
 @dp.message(BroadcastTG.waiting_delay)
@@ -757,7 +760,6 @@ async def broadcast_tg_delay(message: types.Message, state: FSMContext):
                 if any(x in err for x in ['user is blocked', 'peer_id_invalid', 'not found', 'cannot write']):
                     continue
                 else:
-                    print(f"Ошибка: {e}")
                     continue
         await client.disconnect()
         await message.answer(f"✅ Отправлено {sent} из {total}")
@@ -1075,7 +1077,7 @@ async def withdraw_wallet(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, f"📥 Заявка от {message.from_user.id}\nСумма: {amount}$\nКошелёк: {wallet}")
     await state.clear()
 
-# ========== ПОДКЛЮЧЕНИЕ НОВЫХ АККАУНТОВ (ИСПРАВЛЕННЫЙ БЛОК) ==========
+# ========== ПОДКЛЮЧЕНИЕ НОВЫХ АККАУНТОВ ==========
 @dp.callback_query(F.data == "add_tg")
 async def add_tg_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.message.chat.type != ChatType.PRIVATE:
@@ -1093,8 +1095,8 @@ async def add_tg_phone(message: types.Message, state: FSMContext):
     if message.chat.type != ChatType.PRIVATE:
         return
     phone = message.text.strip()
-    session_file = f"sessions/{message.from_user.id}_{phone}.session"
-    os.makedirs("sessions", exist_ok=True)
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    session_file = os.path.join(SESSIONS_DIR, f"{message.from_user.id}_{phone}.session")
     client = TelegramClient(session_file, API_ID, API_HASH)
     await client.connect()
     try:
@@ -1119,9 +1121,7 @@ async def add_tg_code(message: types.Message, state: FSMContext):
         me = await client.get_me()
         name = f"{me.first_name} {me.last_name or ''}".strip() or me.username or str(me.id)
         add_tg_account(message.from_user.id, phone, data["session_file"], name)
-        # Показываем информацию (клиент ещё подключён)
         await show_tg_account_info(message, client, phone)
-        # Отключаем
         await client.disconnect()
         await state.clear()
     except SessionPasswordNeededError:
@@ -1132,7 +1132,6 @@ async def add_tg_code(message: types.Message, state: FSMContext):
         if "expired" in error.lower():
             await message.answer("❌ Код истёк. Отправляю новый...")
             await client.send_code_request(phone)
-            # остаёмся в состоянии waiting_code
         else:
             await message.answer(f"❌ Ошибка: {e}")
             await client.disconnect()
@@ -1159,50 +1158,53 @@ async def add_tg_2fa(message: types.Message, state: FSMContext):
         await state.clear()
 
 async def show_tg_account_info(message: types.Message, client: TelegramClient, phone: str):
-    if not client.is_connected():
-        await client.connect()
-    me = await client.get_me()
-    spam_status = await check_spambot(client)
+    try:
+        if not client.is_connected():
+            await client.connect()
+        me = await client.get_me()
+        spam_status = await check_spambot(client)
 
-    country_map = {
-        "7": "🇷🇺 Россия", "380": "🇺🇦 Украина", "375": "🇧🇾 Беларусь",
-        "1": "🇺🇸 США", "44": "🇬🇧 Великобритания", "49": "🇩🇪 Германия",
-        "90": "🇹🇷 Турция", "86": "🇨🇳 Китай", "91": "🇮🇳 Индия"
-    }
-    country = "Неизвестно"
-    if phone and phone.startswith('+'):
-        for code in country_map:
-            if phone.startswith('+' + code):
-                country = country_map[code]
-                break
+        country_map = {
+            "7": "🇷🇺 Россия", "380": "🇺🇦 Украина", "375": "🇧🇾 Беларусь",
+            "1": "🇺🇸 США", "44": "🇬🇧 Великобритания", "49": "🇩🇪 Германия",
+            "90": "🇹🇷 Турция", "86": "🇨🇳 Китай", "91": "🇮🇳 Индия"
+        }
+        country = "Неизвестно"
+        if phone and phone.startswith('+'):
+            for code in country_map:
+                if phone.startswith('+' + code):
+                    country = country_map[code]
+                    break
 
-    dialogs = await client.get_dialogs()
-    users = [d for d in dialogs if d.is_user]
-    total_contacts = len(users)
-    total_dialogs = len(dialogs)
+        dialogs = await client.get_dialogs()
+        users = [d for d in dialogs if d.is_user]
+        total_contacts = len(users)
+        total_dialogs = len(dialogs)
 
-    mutual = 0
-    for user in users[:50]:
-        try:
-            async for _ in client.iter_messages(user.entity, limit=1):
-                mutual += 1
-                break
-        except:
-            pass
+        mutual = 0
+        for user in users[:50]:
+            try:
+                async for _ in client.iter_messages(user.entity, limit=1):
+                    mutual += 1
+                    break
+            except:
+                pass
 
-    info = (
-        f"📱 *Telegram аккаунт*\n"
-        f"📞 Номер: `{phone[:4]}****{phone[-3:] if len(phone) > 7 else ''}`\n"
-        f"🆔 ID: `{me.id}`\n"
-        f"👤 Имя: {me.first_name} {me.last_name or ''}\n"
-        f"🌍 Страна: {country}\n"
-        f"🔒 *Спам-блок:* {spam_status}\n"
-        f"👥 Контактов (всего): {total_contacts}\n"
-        f"💬 Диалогов (всего): {total_dialogs}\n"
-        f"🤝 Взаимных контактов (приблизительно): {mutual}\n"
-        f"✅ Аккаунт успешно подключён!"
-    )
-    await message.answer(info, parse_mode="Markdown")
+        info = (
+            f"📱 *Telegram аккаунт*\n"
+            f"📞 Номер: `{phone[:4]}****{phone[-3:] if len(phone) > 7 else ''}`\n"
+            f"🆔 ID: `{me.id}`\n"
+            f"👤 Имя: {me.first_name} {me.last_name or ''}\n"
+            f"🌍 Страна: {country}\n"
+            f"🔒 *Спам-блок:* {spam_status}\n"
+            f"👥 Контактов (всего): {total_contacts}\n"
+            f"💬 Диалогов (всего): {total_dialogs}\n"
+            f"🤝 Взаимных контактов (приблизительно): {mutual}\n"
+            f"✅ Аккаунт успешно подключён!"
+        )
+        await message.answer(info, parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось получить информацию об аккаунте: {e}")
 
 @dp.callback_query(F.data == "add_vk")
 async def add_vk_start(callback: types.CallbackQuery, state: FSMContext):
@@ -1641,7 +1643,7 @@ async def group_balance_callback(callback: types.CallbackQuery):
     await callback.message.reply(f"👤 {callback.from_user.first_name}, ваш баланс: {balance:.2f}$")
     await callback.answer()
 
-# ========== АДМИН-ПАНЕЛЬ (КНОПКИ) ==========
+# ========== АДМИН-ПАНЕЛЬ ==========
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
     if callback.message.chat.type != ChatType.PRIVATE:
