@@ -437,31 +437,37 @@ user_game_data = {}
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+async def is_subscribed_to_channel(user_id: int) -> bool:
+    if not CHANNEL_USERNAME:
+        return True
+    try:
+        member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
+        return member.status in ["member", "creator", "administrator"]
+    except:
+        return False
+
 # ========== ОСНОВНЫЕ ХЕНДЛЕРЫ ==========
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     if message.chat.type != ChatType.PRIVATE:
         return
     create_user(message.from_user.id, message.from_user.username or str(message.from_user.id))
-    if not await check_channel_subscription(message.from_user.id):
+    if not await is_subscribed_to_channel(message.from_user.id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Подписаться", url=f"https://t.me/{CHANNEL_USERNAME}")],
-            [InlineKeyboardButton(text="✅ Проверить", callback_data="check_sub")]
+            [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
         ])
-        await message.answer(f"Подпишитесь на @{CHANNEL_USERNAME}", reply_markup=kb)
+        await message.answer(f"🎲 *Добро пожаловать!*\nПодпишитесь на канал @{CHANNEL_USERNAME}", parse_mode="Markdown", reply_markup=kb)
         return
-    await message.answer("🎲 Добро пожаловать!\nИспользуйте кнопки меню.", reply_markup=main_menu(message.from_user.id))
+    await message.answer("🎲 Добро пожаловать!", reply_markup=main_menu(message.from_user.id))
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(callback: types.CallbackQuery):
-    if callback.message.chat.type != ChatType.PRIVATE:
-        await callback.answer("Только в ЛС", show_alert=True)
-        return
-    if await check_channel_subscription(callback.from_user.id):
+    if await is_subscribed_to_channel(callback.from_user.id):
         await callback.message.delete()
         await start_cmd(callback.message)
     else:
-        await callback.answer("❌ Не подписаны", show_alert=True)
+        await callback.answer("❌ Вы не подписаны на канал. Нажмите 'Подписаться' и затем 'Проверить подписку'.", show_alert=True)
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback: types.CallbackQuery):
